@@ -1,6 +1,8 @@
 package dispatcher
 
 import (
+	"time"
+
 	"github.com/xtls/xray-core/common"
 	"github.com/xtls/xray-core/common/buf"
 	"github.com/xtls/xray-core/features/stats"
@@ -35,6 +37,15 @@ func (r *SizeStatReader) ReadMultiBuffer() (buf.MultiBuffer, error) {
 	mb, err := r.Reader.ReadMultiBuffer()
 	r.Counter.Add(int64(mb.Len()))
 	return mb, err
+}
+
+func (r *SizeStatReader) ReadMultiBufferTimeout(timeout time.Duration) (buf.MultiBuffer, error) {
+	if tr, ok := r.Reader.(buf.TimeoutReader); ok {
+		mb, err := tr.ReadMultiBufferTimeout(timeout)
+		r.Counter.Add(int64(mb.Len()))
+		return mb, err
+	}
+	return r.ReadMultiBuffer()
 }
 
 func (r *SizeStatReader) Close() error {
