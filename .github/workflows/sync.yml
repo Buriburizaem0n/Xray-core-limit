@@ -32,8 +32,28 @@ jobs:
       - name: Merge Upstream
         run: |
           # Try to merge upstream/main into current branch
-          # This will fail if there are conflicts, fulfilling the "manual solve" requirement
-          git merge upstream/main
+          if git merge upstream/main; then
+            echo "Merge successful"
+          else
+            echo "Merge failed, checking for generated file conflicts..."
+            # Check for conflict in .pb.go files
+            if git diff --name-only --diff-filter=U | grep "\.pb\.go$"; then
+              echo "Resolving .pb.go conflicts with --ours"
+              git diff --name-only --diff-filter=U | grep "\.pb\.go$" | xargs git checkout --ours
+              git add .
+              
+              # Check if any other conflicts remain
+              if git diff --name-only --diff-filter=U | grep .; then
+                echo "Still have conflicts after resolving .pb.go. Failing."
+                exit 1
+              fi
+              
+              git commit -m "Merge upstream/main (auto-resolve .pb.go conflicts)"
+            else
+              echo "Merge failed due to non-generated file conflicts."
+              exit 1
+            fi
+          fi
 
       - name: Push Changes
         if: success()
