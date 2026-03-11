@@ -1,0 +1,74 @@
+name: Auto Release from Upstream
+
+on:
+  schedule:
+    - cron: '30 0 * * *' # Run daily at 00:30 UTC
+  workflow_dispatch: # Allow manual trigger
+
+permissions:
+  contents: write
+
+jobs:
+  auto-release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Fetch Latest Upstream Release
+        id: upstream
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # Fetch the latest release info from upstream
+          LATEST_RELEASE=$(gh api repos/XTLS/Xray-core/releases/latest)
+          
+          # Extract the tag name
+          TAG_NAME=$(echo "$LATEST_RELEASE" | jq -r '.tag_name')
+          
+          # Extract the title (name)
+          RELEASE_NAME=$(echo "$LATEST_RELEASE" | jq -r '.name')
+          
+          # Extract the body (release notes) and save to a file to handle multiline
+          echo "$LATEST_RELEASE" | jq -r '.body' > release_notes.txt
+          
+          echo "tag=$TAG_NAME" >> "$GITHUB_OUTPUT"
+          echo "name=$RELEASE_NAME" >> "$GITHUB_OUTPUT"
+          
+          echo "Upstream latest release is $TAG_NAME"
+
+      - name: Check Local Releases
+        id: local
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG_NAME="${{ steps.upstream.outputs.tag }}"
+          
+          # Check if the release already exists locally
+          if gh release view "$TAG_NAME" > /dev/null 2>&1; then
+            echo "Release $TAG_NAME already exists in this repository."
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "Release $TAG_NAME not found."
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Publish New Release
+        if: steps.local.outputs.exists == 'false'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG_NAME="${{ steps.upstream.outputs.tag }}"
+          RELEASE_NAME="${{ steps.upstream.outputs.name }}"
+          
+          echo "Publishing release $TAG_NAME..."
+          
+          gh release create "$TAG_NAME" \
+            --title "$RELEASE_NAME" \
+            --notes-file release_notes.txt \
+            --target main
+            
+          echo "Successfully published release $TAG_NAME!"
