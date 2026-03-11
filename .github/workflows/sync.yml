@@ -30,32 +30,63 @@ jobs:
           git fetch upstream
 
       - name: Merge Upstream
+        id: merge
         run: |
           # Try to merge upstream/main into current branch
-          if git merge upstream/main; then
-            echo "Merge successful"
-          else
-            echo "Merge failed, checking for generated file conflicts..."
-            # Check for conflict in .pb.go files
-            if git diff --name-only --diff-filter=U | grep "\.pb\.go$"; then
-              echo "Resolving .pb.go conflicts with --ours"
-              git diff --name-only --diff-filter=U | grep "\.pb\.go$" | xargs git checkout --ours
-              git add .
-              
-              # Check if any other conflicts remain
-              if git diff --name-only --diff-filter=U | grep .; then
-                echo "Still have conflicts after resolving .pb.go. Failing."
-                exit 1
+          git merge upstream/main --no-edit || true
+          
+          if [ -f .git/MERGE_HEAD ]; then
+            echo "Merge resulted in conflicts. Attempting to auto-resolve unimportant files..."
+            
+            for target in README.md go.mod go.sum; do
+              if git ls-files -u | grep -q "$target"; then
+                echo "Auto-resolving $target with --ours"
+                git checkout --ours "$target"
+                git add "$target"
               fi
-              
-              git commit -m "Merge upstream/main (auto-resolve .pb.go conflicts)"
-            else
-              echo "Merge failed due to non-generated file conflicts."
-              exit 1
+            done
+            
+            # Auto-resolve .pb.go files
+            if git ls-files -u | grep -q "\.pb\.go$"; then
+              echo "Auto-resolving .pb.go files with --ours"
+              git ls-files -u | grep "\.pb\.go$" | awk '{print $4}' | sort -u | xargs -r git checkout --ours
+              git ls-files -u | grep "\.pb\.go$" | awk '{print $4}' | sort -u | xargs -r git add
             fi
+            
+            # Check if Unmerged files still exist
+            if git ls-files -u | grep -q .; then
+              echo "Real conflicts still exist in core code. Aborting merge and creating PR..."
+              git merge --abort
+              git checkout -b sync-upstream upstream/main
+              echo "merged=false" >> "$GITHUB_OUTPUT"
+            else
+              echo "All conflicts auto-resolved. Committing..."
+              git commit -m "Merge upstream/main (auto-resolve config/pb.go conflicts)"
+              echo "merged=true" >> "$GITHUB_OUTPUT"
+            fi
+          else
+            echo "Merge successful without conflicts."
+            echo "merged=true" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Push Changes
-        if: success()
+      - name: Push Changes (Clean Merge)
+        if: steps.merge.outputs.merged == 'true'
         run: |
           git push origin main
+
+      - name: Create Pull Request (Conflict)
+        if: steps.merge.outputs.merged == 'false'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          git push -f origin sync-upstream
+          # Check if PR already exists
+          if gh pr list --head sync-upstream | grep "sync-upstream"; then
+            echo "PR already exists. Make sure to update it."
+          else
+            gh pr create \
+              --base main \
+              --head sync-upstream \
+              --title "Sync from upstream/main" \
+              --body "This PR syncs upstream/main into your repository. There were merge conflicts with your customized code. Please resolve them."
+          fi
