@@ -175,6 +175,7 @@ func (d *DefaultDispatcher) getLink(ctx context.Context) (*transport.Link, *tran
 					errors.LogWarning(ctx, "user ", user.Email, " exceeded max concurrent IPs: ", p.Stats.MaxConcurrentIPs, ", current IP: ", userIP)
 					return nil, nil
 				}
+				context.AfterFunc(ctx, func() { om.RemoveIP(userIP) })
 			}
 		}
 		burst := calculateBurst(p.Stats.UplinkSpeedLimit, p.Stats.DownlinkSpeedLimit, p.Stats.BurstSize)
@@ -216,6 +217,7 @@ func (d *DefaultDispatcher) getLink(ctx context.Context) (*transport.Link, *tran
 			name := "user>>>" + user.Email + ">>>online"
 			if om, _ := stats.GetOrRegisterOnlineMap(d.stats, name); om != nil {
 				om.AddIP(userIP)
+				context.AfterFunc(ctx, func() { om.RemoveIP(userIP) })
 			}
 		}
 	}
@@ -249,11 +251,13 @@ func WrapLink(ctx context.Context, policyManager policy.Manager, statsManager st
 					common.Interrupt(link.Reader)
 					return link, true // rejected
 				}
+				context.AfterFunc(ctx, func() { om.RemoveIP(userIP) })
 			}
 		} else if p.Stats.UserOnline {
 			name := "user>>>" + user.Email + ">>>online"
 			if om, _ := stats.GetOrRegisterOnlineMap(statsManager, name); om != nil {
 				om.AddIP(userIP)
+				context.AfterFunc(ctx, func() { om.RemoveIP(userIP) })
 			}
 		}
 		burst := calculateBurst(p.Stats.UplinkSpeedLimit, p.Stats.DownlinkSpeedLimit, p.Stats.BurstSize)

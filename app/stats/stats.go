@@ -216,7 +216,7 @@ func (m *Manager) GetAllOnlineUsers() []string {
 
 	usersOnline := make([]string, 0, len(m.onlineMap))
 	for user, onlineMap := range m.onlineMap {
-		if len(onlineMap.IpTimeMap()) > 0 {
+		if onlineMap.Count() > 0 {
 			usersOnline = append(usersOnline, user)
 		}
 	}

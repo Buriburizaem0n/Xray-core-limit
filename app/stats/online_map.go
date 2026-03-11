@@ -2,127 +2,133 @@ package stats
 
 import (
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
-// OnlineMap is an implementation of stats.OnlineMap.
-type OnlineMap struct {
-	ipList        map[string]time.Time
-	access        sync.RWMutex
-	lastCleanup   time.Time
-	cleanupPeriod time.Duration
-	ipTimeout     time.Duration
-	maxIPs        int
+const (
+	localhostIPv4 = "127.0.0.1"
+	localhostIPv6 = "[::1]"
+)
+
+type ipEntry struct {
+	refCount int
+	lastSeen time.Time
 }
 
-// NewOnlineMap creates a new instance of OnlineMap.
+// OnlineMap is a refcount-based implementation of stats.OnlineMap.
+// IPs are tracked by reference counting: AddIP increments, RemoveIP decrements.
+// An IP is removed from the map when its reference count reaches zero.
+type OnlineMap struct {
+	entries map[string]*ipEntry
+	access  sync.Mutex
+	count   atomic.Int64
+	maxIPs  int
+}
+
+// NewOnlineMap creates a new OnlineMap instance.
 func NewOnlineMap() *OnlineMap {
 	return &OnlineMap{
-		ipList:        make(map[string]time.Time),
-		lastCleanup:   time.Now(),
-		cleanupPeriod: 10 * time.Second,
-		ipTimeout:     20 * time.Second,
+		entries: make(map[string]*ipEntry),
 	}
-}
-
-// Count implements stats.OnlineMap.
-func (c *OnlineMap) Count() int {
-	c.access.RLock()
-	defer c.access.RUnlock()
-
-	return len(c.ipList)
-}
-
-// List implements stats.OnlineMap.
-func (c *OnlineMap) List() []string {
-	return c.GetKeys()
 }
 
 // AddIP implements stats.OnlineMap.
-func (c *OnlineMap) AddIP(ip string) {
-	if ip == "127.0.0.1" {
+func (om *OnlineMap) AddIP(ip string) {
+	if ip == localhostIPv4 || ip == localhostIPv6 {
 		return
 	}
 
-	c.access.Lock()
-	defer c.access.Unlock()
-	c.ipList[ip] = time.Now()
-	if time.Since(c.lastCleanup) > c.cleanupPeriod {
-		c.removeExpiredIPsLocked()
+	om.access.Lock()
+	defer om.access.Unlock()
+
+	if e, ok := om.entries[ip]; ok {
+		e.refCount++
+		e.lastSeen = time.Now()
+	} else {
+		om.entries[ip] = &ipEntry{
+			refCount: 1,
+			lastSeen: time.Now(),
+		}
+		om.count.Add(1)
 	}
 }
 
 // TryAddIP atomically checks if an IP can be added and adds it if allowed.
-func (c *OnlineMap) TryAddIP(ip string) bool {
-	if ip == "127.0.0.1" {
+func (om *OnlineMap) TryAddIP(ip string) bool {
+	if ip == localhostIPv4 || ip == localhostIPv6 {
 		return true
 	}
 
-	c.access.Lock()
-	defer c.access.Unlock()
+	om.access.Lock()
+	defer om.access.Unlock()
 
-	if time.Since(c.lastCleanup) > c.cleanupPeriod {
-		c.removeExpiredIPsLocked()
-	}
-	if _, exists := c.ipList[ip]; exists {
-		c.ipList[ip] = time.Now()
+	if e, ok := om.entries[ip]; ok {
+		e.refCount++
+		e.lastSeen = time.Now()
 		return true
 	}
 
-	if c.maxIPs > 0 && len(c.ipList) >= c.maxIPs {
+	if om.maxIPs > 0 && len(om.entries) >= om.maxIPs {
 		return false
 	}
-	c.ipList[ip] = time.Now()
+
+	om.entries[ip] = &ipEntry{
+		refCount: 1,
+		lastSeen: time.Now(),
+	}
+	om.count.Add(1)
 	return true
 }
 
 // SetMaxIPs sets the maximum concurrent IPs allowed.
-func (c *OnlineMap) SetMaxIPs(max int) {
-	c.access.Lock()
-	defer c.access.Unlock()
-	c.maxIPs = max
+func (om *OnlineMap) SetMaxIPs(max int) {
+	om.access.Lock()
+	defer om.access.Unlock()
+	om.maxIPs = max
 }
 
-func (c *OnlineMap) GetKeys() []string {
-	c.access.RLock()
-	defer c.access.RUnlock()
+// RemoveIP implements stats.OnlineMap.
+func (om *OnlineMap) RemoveIP(ip string) {
+	om.access.Lock()
+	defer om.access.Unlock()
 
-	keys := make([]string, 0, len(c.ipList))
-	for k := range c.ipList {
-		keys = append(keys, k)
+	e, ok := om.entries[ip]
+	if !ok {
+		return
+	}
+	e.refCount--
+	if e.refCount <= 0 {
+		delete(om.entries, ip)
+		om.count.Add(-1)
+	}
+}
+
+// Count implements stats.OnlineMap.
+func (om *OnlineMap) Count() int {
+	return int(om.count.Load())
+}
+
+// List implements stats.OnlineMap.
+func (om *OnlineMap) List() []string {
+	om.access.Lock()
+	defer om.access.Unlock()
+
+	keys := make([]string, 0, len(om.entries))
+	for ip := range om.entries {
+		keys = append(keys, ip)
 	}
 	return keys
 }
 
-// RemoveExpiredIPs allows manual cleanup of expired IPs.
-func (c *OnlineMap) RemoveExpiredIPs() {
-	c.access.Lock()
-	defer c.access.Unlock()
-	c.removeExpiredIPsLocked()
-}
+// IPTimeMap implements stats.OnlineMap.
+func (om *OnlineMap) IPTimeMap() map[string]time.Time {
+	om.access.Lock()
+	defer om.access.Unlock()
 
-// removeExpiredIPsLocked removes expired IPs. Caller must hold the lock.
-func (c *OnlineMap) removeExpiredIPsLocked() {
-	now := time.Now()
-	for k, t := range c.ipList {
-		if now.Sub(t) > c.ipTimeout {
-			delete(c.ipList, k)
-		}
-	}
-	c.lastCleanup = now
-}
-
-func (c *OnlineMap) IpTimeMap() map[string]time.Time {
-	c.access.Lock()
-	defer c.access.Unlock()
-
-	if time.Since(c.lastCleanup) > c.cleanupPeriod {
-		c.removeExpiredIPsLocked()
-	}
-
-	result := make(map[string]time.Time, len(c.ipList))
-	for k, v := range c.ipList {
-		result[k] = v
+	result := make(map[string]time.Time, len(om.entries))
+	for ip, e := range om.entries {
+		result[ip] = e.lastSeen
 	}
 	return result
 }

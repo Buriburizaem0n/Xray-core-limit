@@ -26,14 +26,16 @@ type Counter interface {
 //
 // xray:api:stable
 type OnlineMap interface {
-	// Count is the current value of the OnlineMap.
+	// Count returns the number of unique online IPs.
 	Count() int
-	// AddIP adds a ip to the current OnlineMap.
+	// AddIP increments the reference count for the given IP.
 	AddIP(string)
-	// List is the current OnlineMap ip list.
+	// RemoveIP decrements the reference count for the given IP. Deletes at zero.
+	RemoveIP(string)
+	// List returns all currently online IPs.
 	List() []string
-	// IpTimeMap return client ips and their last access time.
-	IpTimeMap() map[string]time.Time
+	// IPTimeMap returns a snapshot copy of IPs to their last-seen times.
+	IPTimeMap() map[string]time.Time
 	// TryAddIP atomically checks if an IP can be added and adds it if allowed.
 	TryAddIP(ip string) bool
 	// SetMaxIPs sets the maximum concurrent IPs allowed.
