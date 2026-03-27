@@ -88,5 +88,5 @@ jobs:
               --base main \
               --head sync-upstream \
               --title "Sync from upstream/main" \
-              --body "This PR syncs upstream/main into your repository. There were merge conflicts with your customized code. Please resolve them."
+              --body "This PR syncs upstream/main into your repository. There were merge conflicts with your customized code. Please resolve them." || echo "Notice: PR creation failed. This often happens if there are no new commits upstream, or if previous PRs were Squash-Merged (which breaks git history linkage). Workflow continues gracefully."
           fi
