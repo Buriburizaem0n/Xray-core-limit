@@ -65,7 +65,8 @@ func (om *OnlineMap) TryAddIP(ip string) bool {
 
 	if e, ok := om.entries[ip]; ok {
 		e.refCount++
-		e.lastSeen = time.Now()
+		e.lastSeen = time.Now().Unix()
+		om.entries[ip] = e
 		return true
 	}
 
@@ -73,9 +74,9 @@ func (om *OnlineMap) TryAddIP(ip string) bool {
 		return false
 	}
 
-	om.entries[ip] = &ipEntry{
+	om.entries[ip] = ipEntry{
 		refCount: 1,
-		lastSeen: time.Now(),
+		lastSeen: time.Now().Unix(),
 	}
 	om.count.Add(1)
 	return true
@@ -108,6 +109,17 @@ func (om *OnlineMap) RemoveIP(ip string) {
 // Count implements stats.OnlineMap.
 func (om *OnlineMap) Count() int {
 	return int(om.count.Load())
+}
+
+// List implements stats.OnlineMap.
+func (om *OnlineMap) List() []string {
+	om.access.Lock()
+	defer om.access.Unlock()
+	ips := make([]string, 0, len(om.entries))
+	for ip := range om.entries {
+		ips = append(ips, ip)
+	}
+	return ips
 }
 
 // ForEach calls fn for each online IP. If fn returns false, iteration stops.
