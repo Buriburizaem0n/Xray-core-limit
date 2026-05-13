@@ -17,6 +17,10 @@
 1. **用户必须配置 `email` 字段** - 用于唯一标识用户
 2. **启用统计功能** - 需要 `statsUserUplink` 和/或 `statsUserDownlink`
 
+[![BlancVPN](https://github.com/user-attachments/assets/9145ea7d-5da3-446e-8143-710dba4292c3)](https://blanc.link/VMTSDqW)
+
+[**Sponsor Xray-core**](https://github.com/XTLS/Xray-core/issues/3668)
+
 ## 配置示例
 
 ```json
@@ -100,12 +104,12 @@
   - [Marzban](https://github.com/Gozargah/Marzban)
   - [Hiddify](https://github.com/hiddify/Hiddify-Manager)
   - [TX-UI](https://github.com/AghayeCoder/tx-ui)
+  - [CELERITY](https://github.com/ClickDevTech/CELERITY-panel)
 - One Click
   - [Xray-REALITY](https://github.com/zxcvos/Xray-script), [xray-reality](https://github.com/sajjaddg/xray-reality), [reality-ezpz](https://github.com/aleskxyz/reality-ezpz)
   - [Xray_bash_onekey](https://github.com/hello-yunshu/Xray_bash_onekey), [XTool](https://github.com/LordPenguin666/XTool), [VPainLess](https://github.com/vpainless/vpainless)
   - [v2ray-agent](https://github.com/mack-a/v2ray-agent), [Xray_onekey](https://github.com/wulabing/Xray_onekey), [ProxySU](https://github.com/proxysu/ProxySU)
 - Magisk
-  - [NetProxy-Magisk](https://github.com/Fanju6/NetProxy-Magisk)
   - [Xray4Magisk](https://github.com/Asterisk4Magisk/Xray4Magisk)
   - [Xray_For_Magisk](https://github.com/E7KMbb/Xray_For_Magisk)
 - Homebrew
@@ -143,6 +147,8 @@
   - [Invisible Man - Xray](https://github.com/InvisibleManVPN/InvisibleMan-XRayClient)
   - [AnyPortal](https://github.com/AnyPortal/AnyPortal)
   - [GenyConnect](https://github.com/genyleap/GenyConnect)
+  - [OneXray](https://github.com/OneXray/OneXray)
+  - [XrayUI-dev](https://github.com/PhoenixNil/XrayUI-dev)
 - Android
   - [v2rayNG](https://github.com/2dust/v2rayNG)
   - [X-flutter](https://github.com/XTLS/X-flutter)
@@ -150,11 +156,12 @@
   - [SimpleXray](https://github.com/lhear/SimpleXray)
   - [XrayFA](https://github.com/Q7DF1/XrayFA)
   - [AnyPortal](https://github.com/AnyPortal/AnyPortal)
-  - [NetProxy-Magisk](https://github.com/Fanju6/NetProxy-Magisk)
+  - [OneXray](https://github.com/OneXray/OneXray)
 - iOS & macOS arm64 & tvOS
   - [Happ](https://apps.apple.com/app/happ-proxy-utility/id6504287215) | [Happ RU](https://apps.apple.com/ru/app/happ-proxy-utility-plus/id6746188973) | [Happ tvOS](https://apps.apple.com/us/app/happ-proxy-utility-for-tv/id6748297274)
   - [Streisand](https://apps.apple.com/app/streisand/id6450534064)
   - [OneXray](https://github.com/OneXray/OneXray)
+  - [INCY](https://apps.apple.com/en/app/incy/id6756943388)
 - macOS arm64 & x64
   - [Happ](https://apps.apple.com/app/happ-proxy-utility/id6504287215) | [Happ RU](https://apps.apple.com/ru/app/happ-proxy-utility-plus/id6746188973)
   - [V2rayU](https://github.com/yanue/V2rayU)
@@ -165,6 +172,7 @@
   - [AnyPortal](https://github.com/AnyPortal/AnyPortal)
   - [v2rayN](https://github.com/2dust/v2rayN)
   - [GenyConnect](https://github.com/genyleap/GenyConnect)
+  - [INCY](https://apps.apple.com/en/app/incy/id6756943388)
 - Linux
   - [v2rayA](https://github.com/v2rayA/v2rayA)
   - [Furious](https://github.com/LorenEteval/Furious)
@@ -173,10 +181,12 @@
   - [AnyPortal](https://github.com/AnyPortal/AnyPortal)
   - [v2rayN](https://github.com/2dust/v2rayN)
   - [GenyConnect](https://github.com/genyleap/GenyConnect)
+  - [OneXray](https://github.com/OneXray/OneXray)
 
 ## Others that support VLESS, XTLS, REALITY, XUDP, PLUX...
 
 - iOS & macOS arm64 & tvOS
+  - [Anywhere](https://github.com/NodePassProject/Anywhere)
   - [Shadowrocket](https://apps.apple.com/app/shadowrocket/id932747118)
   - [Loon](https://apps.apple.com/us/app/loon/id1373567447)
   - [Egern](https://apps.apple.com/us/app/egern/id1616105820)

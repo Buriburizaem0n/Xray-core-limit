@@ -9,7 +9,10 @@ import (
 	go_errors "errors"
 	"io"
 	"net"
+	"strconv"
+	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/xtls/xray-core/common"
@@ -36,8 +39,12 @@ type packet struct {
 type xdnsConnClient struct {
 	net.PacketConn
 
+	resolverAddrs []*net.UDPAddr
+	resolverIdx   uint32
+	resolverSend  map[string]*atomic.Uint32
+
 	clientID []byte
-	domain   Name
+	domains  []Name
 
 	pollChan   chan struct{}
 	readQueue  chan *packet
@@ -48,16 +55,54 @@ type xdnsConnClient struct {
 }
 
 func NewConnClient(c *Config, raw net.PacketConn) (net.PacketConn, error) {
-	domain, err := ParseName(c.Domain)
-	if err != nil {
-		return nil, err
+	if len(c.Resolvers) == 0 {
+		return nil, errors.New("empty resolvers")
+	}
+
+	var domains []Name
+	var servers []string
+	for _, rs := range c.Resolvers {
+		parts := strings.Split(rs, "+udp://")
+		if len(parts) != 2 {
+			return nil, errors.New("invalid resolvers")
+		}
+		domain, err := ParseName(parts[0])
+		if err != nil {
+			return nil, err
+		}
+		domains = append(domains, domain)
+		servers = append(servers, parts[1])
+	}
+
+	var resolverAddrs []*net.UDPAddr
+	var resolverSend = make(map[string]*atomic.Uint32)
+	for _, rs := range servers {
+		h, p, err := net.SplitHostPort(rs)
+		if err != nil {
+			return nil, err
+		}
+		ip := net.ParseIP(h)
+		if ip == nil {
+			return nil, errors.New("invalid ip address")
+		}
+		port, err := strconv.Atoi(p)
+		if err != nil {
+			return nil, errors.New("invalid port").Base(err)
+		}
+		addr := &net.UDPAddr{IP: ip, Port: port}
+		resolverAddrs = append(resolverAddrs, addr)
+		resolverSend[addr.String()] = &atomic.Uint32{}
 	}
 
 	conn := &xdnsConnClient{
 		PacketConn: raw,
 
+		resolverAddrs: resolverAddrs,
+		resolverIdx:   0,
+		resolverSend:  resolverSend,
+
 		clientID: make([]byte, 8),
-		domain:   domain,
+		domains:  domains,
 
 		pollChan:   make(chan struct{}, pollLimit),
 		readQueue:  make(chan *packet, 256),
@@ -81,10 +126,19 @@ func (c *xdnsConnClient) recvLoop() {
 		}
 
 		n, addr, err := c.PacketConn.ReadFrom(buf[:])
-		if err != nil || n == 0 {
-			if go_errors.Is(err, net.ErrClosed) || go_errors.Is(err, io.EOF) {
+		if err != nil {
+			if go_errors.Is(err, net.ErrClosed) {
 				break
 			}
+			continue
+		}
+
+		if addr == nil {
+			continue
+		}
+
+		send := c.resolverSend[addr.String()]
+		if send == nil {
 			continue
 		}
 
@@ -94,7 +148,7 @@ func (c *xdnsConnClient) recvLoop() {
 			continue
 		}
 
-		payload := dnsResponsePayload(&resp, c.domain)
+		payload := dnsResponsePayload(&resp, c.domains)
 
 		r := bytes.NewReader(payload)
 		anyPacket := false
@@ -118,6 +172,7 @@ func (c *xdnsConnClient) recvLoop() {
 		}
 
 		if anyPacket {
+			send.Store(0)
 			select {
 			case c.pollChan <- struct{}{}:
 			default:
@@ -138,8 +193,6 @@ func (c *xdnsConnClient) recvLoop() {
 }
 
 func (c *xdnsConnClient) sendLoop() {
-	var addr net.Addr
-
 	pollDelay := initPollDelay
 	pollTimer := time.NewTimer(pollDelay)
 	for {
@@ -158,17 +211,14 @@ func (c *xdnsConnClient) sendLoop() {
 		}
 
 		if p != nil {
-			addr = p.addr
-
 			select {
 			case <-c.pollChan:
 			default:
 			}
-		} else if addr != nil {
-			encoded, _ := encode(nil, c.clientID, c.domain)
+		} else {
+			encoded, _ := encode(nil, c.clientID, c.domains[c.resolverIdx])
 			p = &packet{
-				p:    encoded,
-				addr: addr,
+				p: encoded,
 			}
 		}
 
@@ -189,10 +239,16 @@ func (c *xdnsConnClient) sendLoop() {
 			return
 		}
 
-		if p != nil {
-			_, err := c.PacketConn.WriteTo(p.p, p.addr)
-			if go_errors.Is(err, net.ErrClosed) || go_errors.Is(err, io.ErrClosedPipe) {
-				c.closed = true
+		cur := c.resolverIdx
+		curSend := c.resolverSend[c.resolverAddrs[cur].String()].Add(1)
+		_, _ = c.PacketConn.WriteTo(p.p, c.resolverAddrs[cur])
+		for {
+			c.resolverIdx += 1
+			c.resolverIdx %= uint32(len(c.resolverAddrs))
+			if c.resolverIdx == cur {
+				break
+			}
+			if c.resolverSend[c.resolverAddrs[c.resolverIdx].String()].Load() < curSend {
 				break
 			}
 		}
@@ -220,7 +276,7 @@ func (c *xdnsConnClient) WriteTo(p []byte, addr net.Addr) (n int, err error) {
 		return 0, io.ErrClosedPipe
 	}
 
-	encoded, err := encode(p, c.clientID, c.domain)
+	encoded, err := encode(p, c.clientID, c.domains[c.resolverIdx%uint32(len(c.resolverAddrs))])
 	if err != nil {
 		errors.LogDebug(context.Background(), addr, " xdns wireformat err ", err, " ", len(p))
 		return 0, nil
@@ -332,7 +388,7 @@ func nextPacket(r *bytes.Reader) ([]byte, error) {
 	return p, err
 }
 
-func dnsResponsePayload(resp *Message, domain Name) []byte {
+func dnsResponsePayload(resp *Message, domains []Name) []byte {
 	if resp.Flags&0x8000 != 0x8000 {
 		return nil
 	}
@@ -345,7 +401,13 @@ func dnsResponsePayload(resp *Message, domain Name) []byte {
 	}
 	answer := resp.Answer[0]
 
-	_, ok := answer.Name.TrimSuffix(domain)
+	var ok bool
+	for _, domain := range domains {
+		_, ok = answer.Name.TrimSuffix(domain)
+		if ok {
+			break
+		}
+	}
 	if !ok {
 		return nil
 	}

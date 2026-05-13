@@ -8,12 +8,14 @@ import (
 	"math"
 	"net/url"
 	"os"
+	"regexp"
 	"runtime"
 	"strconv"
 	"strings"
 	"syscall"
 	"time"
 
+	"github.com/xtls/xray-core/common"
 	"github.com/xtls/xray-core/common/errors"
 	"github.com/xtls/xray-core/common/net"
 	"github.com/xtls/xray-core/common/platform/filesystem"
@@ -36,6 +38,7 @@ import (
 	"github.com/xtls/xray-core/transport/internet/finalmask/xicmp"
 	"github.com/xtls/xray-core/transport/internet/httpupgrade"
 	"github.com/xtls/xray-core/transport/internet/hysteria"
+	"github.com/xtls/xray-core/transport/internet/hysteria/congestion/bbr"
 	"github.com/xtls/xray-core/transport/internet/kcp"
 	"github.com/xtls/xray-core/transport/internet/reality"
 	"github.com/xtls/xray-core/transport/internet/splithttp"
@@ -53,62 +56,55 @@ var (
 )
 
 type KCPConfig struct {
-	Mtu             *uint32         `json:"mtu"`
-	Tti             *uint32         `json:"tti"`
-	UpCap           *uint32         `json:"uplinkCapacity"`
-	DownCap         *uint32         `json:"downlinkCapacity"`
-	Congestion      *bool           `json:"congestion"`
-	ReadBufferSize  *uint32         `json:"readBufferSize"`
-	WriteBufferSize *uint32         `json:"writeBufferSize"`
-	HeaderConfig    json.RawMessage `json:"header"`
-	Seed            *string         `json:"seed"`
+	Mtu              *uint32 `json:"mtu"`
+	Tti              *uint32 `json:"tti"`
+	UpCap            *uint32 `json:"uplinkCapacity"`
+	DownCap          *uint32 `json:"downlinkCapacity"`
+	CwndMultiplier   *uint32 `json:"cwndMultiplier"`
+	MaxSendingWindow *uint32 `json:"maxSendingWindow"`
+
+	HeaderConfig json.RawMessage `json:"header"`
+	Seed         *string         `json:"seed"`
 }
 
 // Build implements Buildable.
 func (c *KCPConfig) Build() (proto.Message, error) {
-	config := new(kcp.Config)
-
-	if c.Mtu != nil {
-		mtu := *c.Mtu
-		// if mtu < 576 || mtu > 1460 {
-		// 	return nil, errors.New("invalid mKCP MTU size: ", mtu).AtError()
-		// }
-		config.Mtu = &kcp.MTU{Value: mtu}
-	}
-	if c.Tti != nil {
-		tti := *c.Tti
-		if tti < 10 || tti > 5000 {
-			return nil, errors.New("invalid mKCP TTI: ", tti).AtError()
-		}
-		config.Tti = &kcp.TTI{Value: tti}
-	}
-	if c.UpCap != nil {
-		config.UplinkCapacity = &kcp.UplinkCapacity{Value: *c.UpCap}
-	}
-	if c.DownCap != nil {
-		config.DownlinkCapacity = &kcp.DownlinkCapacity{Value: *c.DownCap}
-	}
-	if c.Congestion != nil {
-		config.Congestion = *c.Congestion
-	}
-	if c.ReadBufferSize != nil {
-		size := *c.ReadBufferSize
-		if size > 0 {
-			config.ReadBuffer = &kcp.ReadBuffer{Size: size * 1024 * 1024}
-		} else {
-			config.ReadBuffer = &kcp.ReadBuffer{Size: 512 * 1024}
-		}
-	}
-	if c.WriteBufferSize != nil {
-		size := *c.WriteBufferSize
-		if size > 0 {
-			config.WriteBuffer = &kcp.WriteBuffer{Size: size * 1024 * 1024}
-		} else {
-			config.WriteBuffer = &kcp.WriteBuffer{Size: 512 * 1024}
-		}
-	}
 	if c.HeaderConfig != nil || c.Seed != nil {
 		return nil, errors.PrintRemovedFeatureError("mkcp header & seed", "finalmask/udp header-* & mkcp-original & mkcp-aes128gcm")
+	}
+
+	config := common.Must2(internet.CreateTransportConfig(kcp.ProtocolName)).(*kcp.Config)
+
+	if c.Mtu != nil {
+		config.Mtu = *c.Mtu
+	}
+	if c.Tti != nil {
+		config.Tti = *c.Tti
+	}
+	if c.UpCap != nil {
+		config.UplinkCapacity = *c.UpCap
+	}
+	if c.DownCap != nil {
+		config.DownlinkCapacity = *c.DownCap
+	}
+	if c.CwndMultiplier != nil {
+		config.CwndMultiplier = *c.CwndMultiplier
+	}
+	if c.MaxSendingWindow != nil {
+		config.MaxSendingWindow = *c.MaxSendingWindow
+	}
+
+	if config.Mtu < 21 {
+		return nil, errors.New("Mtu must be at least 21").AtError()
+	}
+	if config.Tti < 10 || config.Tti > 1000 {
+		return nil, errors.New("invalid mKCP TTI: ", c.Tti).AtError()
+	}
+	if config.CwndMultiplier < 1 {
+		return nil, errors.New("CwndMultiplier must be at least 1").AtError()
+	}
+	if config.GetSendingBufferSize() == 0 {
+		return nil, errors.New("MaxSendingWindow must be >= Mtu").AtError()
 	}
 
 	return config, nil
@@ -501,8 +497,8 @@ func (b Bandwidth) Bps() (uint64, error) {
 }
 
 type UdpHop struct {
-	PortList json.RawMessage `json:"ports"`
-	Interval *Int32Range     `json:"interval"`
+	PortList PortList   `json:"ports"`
+	Interval Int32Range `json:"interval"`
 }
 
 type Masquerade struct {
@@ -630,6 +626,7 @@ func (c *TLSCertConfig) Build() (*tls.Certificate, error) {
 type QuicParamsConfig struct {
 	Congestion                  string    `json:"congestion"`
 	Debug                       bool      `json:"debug"`
+	BbrProfile                  string    `json:"bbrProfile"`
 	BrutalUp                    Bandwidth `json:"brutalUp"`
 	BrutalDown                  Bandwidth `json:"brutalDown"`
 	UdpHop                      UdpHop    `json:"udpHop"`
@@ -906,6 +903,12 @@ func (c *REALITYConfig) Build() (proto.Message, error) {
 			}
 			if config.Mldsa65Seed, err = base64.RawURLEncoding.DecodeString(c.Mldsa65Seed); err != nil || len(config.Mldsa65Seed) != 32 {
 				return nil, errors.New(`invalid "mldsa65Seed": `, c.Mldsa65Seed)
+			}
+		}
+
+		for _, sn := range config.ServerNames {
+			if strings.Contains(sn, "apple") || strings.Contains(sn, "icloud") {
+				errors.LogWarning(context.Background(), `REALITY: Choosing apple, icloud, etc. as the target may get your IP blocked by the GFW`)
 			}
 		}
 
@@ -1229,6 +1232,8 @@ func PraseByteSlice(data json.RawMessage, typ string) ([]byte, error) {
 }
 
 var (
+	customVarNamePattern = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
+
 	tcpmaskLoader = NewJSONConfigLoader(ConfigCreatorCache{
 		"header-custom": func() interface{} { return new(HeaderCustomTCP) },
 		"fragment":      func() interface{} { return new(FragmentMask) },
@@ -1254,10 +1259,14 @@ var (
 )
 
 type TCPItem struct {
-	Delay  Int32Range      `json:"delay"`
-	Rand   int32           `json:"rand"`
-	Type   string          `json:"type"`
-	Packet json.RawMessage `json:"packet"`
+	Delay     Int32Range       `json:"delay"`
+	Rand      int32            `json:"rand"`
+	RandRange *Int32Range      `json:"randRange"`
+	Capture   string           `json:"capture"`
+	Type      string           `json:"type"`
+	Reuse     string           `json:"reuse"`
+	Transform *CustomTransform `json:"transform"`
+	Packet    json.RawMessage  `json:"packet"`
 }
 
 type HeaderCustomTCP struct {
@@ -1269,39 +1278,56 @@ type HeaderCustomTCP struct {
 func (c *HeaderCustomTCP) Build() (proto.Message, error) {
 	for _, value := range c.Clients {
 		for _, item := range value {
-			if len(item.Packet) > 0 && item.Rand > 0 {
-				return nil, errors.New("len(item.Packet) > 0 && item.Rand > 0")
+			if err := validateCustomItemSpec(item.Capture, item.Packet, item.Rand, item.Reuse, item.Transform); err != nil {
+				return nil, err
 			}
 		}
 	}
 	for _, value := range c.Servers {
 		for _, item := range value {
-			if len(item.Packet) > 0 && item.Rand > 0 {
-				return nil, errors.New("len(item.Packet) > 0 && item.Rand > 0")
+			if err := validateCustomItemSpec(item.Capture, item.Packet, item.Rand, item.Reuse, item.Transform); err != nil {
+				return nil, err
 			}
 		}
 	}
 	for _, value := range c.Errors {
 		for _, item := range value {
-			if len(item.Packet) > 0 && item.Rand > 0 {
-				return nil, errors.New("len(item.Packet) > 0 && item.Rand > 0")
+			if err := validateCustomItemSpec(item.Capture, item.Packet, item.Rand, item.Reuse, item.Transform); err != nil {
+				return nil, err
 			}
 		}
 	}
+
+	errInvalidRange := errors.New("invalid randRange")
 
 	clients := make([]*custom.TCPSequence, len(c.Clients))
 	for i, value := range c.Clients {
 		clients[i] = &custom.TCPSequence{}
 		for _, item := range value {
+			if item.RandRange == nil {
+				item.RandRange = &Int32Range{From: 0, To: 255}
+			}
+			if item.RandRange.From < 0 || item.RandRange.To > 255 {
+				return nil, errInvalidRange
+			}
 			var err error
 			if item.Packet, err = PraseByteSlice(item.Packet, item.Type); err != nil {
+				return nil, err
+			}
+			transform, err := buildCustomTransform(item.Transform)
+			if err != nil {
 				return nil, err
 			}
 			clients[i].Sequence = append(clients[i].Sequence, &custom.TCPItem{
 				DelayMin: int64(item.Delay.From),
 				DelayMax: int64(item.Delay.To),
 				Rand:     item.Rand,
+				RandMin:  item.RandRange.From,
+				RandMax:  item.RandRange.To,
 				Packet:   item.Packet,
+				Save:     item.Capture,
+				Var:      item.Reuse,
+				Expr:     transform,
 			})
 		}
 	}
@@ -1310,15 +1336,30 @@ func (c *HeaderCustomTCP) Build() (proto.Message, error) {
 	for i, value := range c.Servers {
 		servers[i] = &custom.TCPSequence{}
 		for _, item := range value {
+			if item.RandRange == nil {
+				item.RandRange = &Int32Range{From: 0, To: 255}
+			}
+			if item.RandRange.From < 0 || item.RandRange.To > 255 {
+				return nil, errInvalidRange
+			}
 			var err error
 			if item.Packet, err = PraseByteSlice(item.Packet, item.Type); err != nil {
+				return nil, err
+			}
+			transform, err := buildCustomTransform(item.Transform)
+			if err != nil {
 				return nil, err
 			}
 			servers[i].Sequence = append(servers[i].Sequence, &custom.TCPItem{
 				DelayMin: int64(item.Delay.From),
 				DelayMax: int64(item.Delay.To),
 				Rand:     item.Rand,
+				RandMin:  item.RandRange.From,
+				RandMax:  item.RandRange.To,
 				Packet:   item.Packet,
+				Save:     item.Capture,
+				Var:      item.Reuse,
+				Expr:     transform,
 			})
 		}
 	}
@@ -1327,15 +1368,30 @@ func (c *HeaderCustomTCP) Build() (proto.Message, error) {
 	for i, value := range c.Errors {
 		errors[i] = &custom.TCPSequence{}
 		for _, item := range value {
+			if item.RandRange == nil {
+				item.RandRange = &Int32Range{From: 0, To: 255}
+			}
+			if item.RandRange.From < 0 || item.RandRange.To > 255 {
+				return nil, errInvalidRange
+			}
 			var err error
 			if item.Packet, err = PraseByteSlice(item.Packet, item.Type); err != nil {
+				return nil, err
+			}
+			transform, err := buildCustomTransform(item.Transform)
+			if err != nil {
 				return nil, err
 			}
 			errors[i].Sequence = append(errors[i].Sequence, &custom.TCPItem{
 				DelayMin: int64(item.Delay.From),
 				DelayMax: int64(item.Delay.To),
 				Rand:     item.Rand,
+				RandMin:  item.RandRange.From,
+				RandMax:  item.RandRange.To,
 				Packet:   item.Packet,
+				Save:     item.Capture,
+				Var:      item.Reuse,
+				Expr:     transform,
 			})
 		}
 	}
@@ -1392,10 +1448,11 @@ func (c *FragmentMask) Build() (proto.Message, error) {
 }
 
 type NoiseItem struct {
-	Rand   Int32Range      `json:"rand"`
-	Type   string          `json:"type"`
-	Packet json.RawMessage `json:"packet"`
-	Delay  Int32Range      `json:"delay"`
+	Rand      Int32Range      `json:"rand"`
+	RandRange *Int32Range     `json:"randRange"`
+	Type      string          `json:"type"`
+	Packet    json.RawMessage `json:"packet"`
+	Delay     Int32Range      `json:"delay"`
 }
 
 type NoiseMask struct {
@@ -1412,16 +1469,24 @@ func (c *NoiseMask) Build() (proto.Message, error) {
 
 	noiseSlice := make([]*noise.Item, 0, len(c.Noise))
 	for _, item := range c.Noise {
+		if item.RandRange == nil {
+			item.RandRange = &Int32Range{From: 0, To: 255}
+		}
+		if item.RandRange.From < 0 || item.RandRange.To > 255 {
+			return nil, errors.New("invalid randRange")
+		}
 		var err error
 		if item.Packet, err = PraseByteSlice(item.Packet, item.Type); err != nil {
 			return nil, err
 		}
 		noiseSlice = append(noiseSlice, &noise.Item{
-			RandMin:  int64(item.Rand.From),
-			RandMax:  int64(item.Rand.To),
-			Packet:   item.Packet,
-			DelayMin: int64(item.Delay.From),
-			DelayMax: int64(item.Delay.To),
+			RandMin:      int64(item.Rand.From),
+			RandMax:      int64(item.Rand.To),
+			RandRangeMin: item.RandRange.From,
+			RandRangeMax: item.RandRange.To,
+			Packet:       item.Packet,
+			DelayMin:     int64(item.Delay.From),
+			DelayMax:     int64(item.Delay.To),
 		})
 	}
 
@@ -1433,55 +1498,246 @@ func (c *NoiseMask) Build() (proto.Message, error) {
 }
 
 type UDPItem struct {
-	Rand   int32           `json:"rand"`
-	Type   string          `json:"type"`
-	Packet json.RawMessage `json:"packet"`
+	Rand      int32            `json:"rand"`
+	RandRange *Int32Range      `json:"randRange"`
+	Capture   string           `json:"capture"`
+	Type      string           `json:"type"`
+	Reuse     string           `json:"reuse"`
+	Transform *CustomTransform `json:"transform"`
+	Packet    json.RawMessage  `json:"packet"`
+}
+
+type CustomTransform struct {
+	Op   string               `json:"op"`
+	Args []CustomTransformArg `json:"args"`
+}
+
+type CustomTransformArg struct {
+	Type      string           `json:"type"`
+	Bytes     json.RawMessage  `json:"bytes"`
+	U64       *uint64          `json:"u64"`
+	Reuse     string           `json:"reuse"`
+	Metadata  string           `json:"metadata"`
+	Transform *CustomTransform `json:"transform"`
+}
+
+func validateCustomVarName(name string) error {
+	if name == "" {
+		return nil
+	}
+	if !customVarNamePattern.MatchString(name) {
+		return errors.New("invalid variable name")
+	}
+	return nil
+}
+
+func validateCustomItemSpec(capture string, packet json.RawMessage, rand int32, reuse string, transform *CustomTransform) error {
+	if err := validateCustomVarName(capture); err != nil {
+		return err
+	}
+	if err := validateCustomVarName(reuse); err != nil {
+		return err
+	}
+
+	kindCount := 0
+	if len(packet) > 0 {
+		kindCount++
+	}
+	if rand > 0 {
+		kindCount++
+	}
+	if reuse != "" {
+		kindCount++
+	}
+	if transform != nil {
+		kindCount++
+	}
+	if kindCount > 1 {
+		return errors.New("exactly one item kind must be set")
+	}
+	if kindCount == 0 && capture != "" {
+		return errors.New("exactly one item kind must be set")
+	}
+
+	return nil
+}
+
+func buildCustomTransform(transform *CustomTransform) (*custom.Expr, error) {
+	if transform == nil {
+		return nil, nil
+	}
+	if transform.Op == "" {
+		return nil, errors.New("transform op is required")
+	}
+	if len(transform.Args) == 0 {
+		return nil, errors.New("transform args are required")
+	}
+
+	args := make([]*custom.ExprArg, 0, len(transform.Args))
+	for _, arg := range transform.Args {
+		parsedArg, err := buildCustomTransformArg(arg)
+		if err != nil {
+			return nil, err
+		}
+		args = append(args, parsedArg)
+	}
+
+	return &custom.Expr{
+		Op:   transform.Op,
+		Args: args,
+	}, nil
+}
+
+func buildCustomTransformArg(arg CustomTransformArg) (*custom.ExprArg, error) {
+	kindCount := 0
+	if len(arg.Bytes) > 0 {
+		kindCount++
+	}
+	if arg.U64 != nil {
+		kindCount++
+	}
+	if arg.Reuse != "" {
+		kindCount++
+	}
+	if arg.Metadata != "" {
+		kindCount++
+	}
+	if arg.Transform != nil {
+		kindCount++
+	}
+	if kindCount != 1 {
+		return nil, errors.New("transform arg must set exactly one value")
+	}
+
+	if len(arg.Bytes) > 0 {
+		value, err := PraseByteSlice(arg.Bytes, arg.Type)
+		if err != nil {
+			return nil, err
+		}
+		return &custom.ExprArg{
+			Value: &custom.ExprArg_Bytes{
+				Bytes: value,
+			},
+		}, nil
+	}
+	if arg.U64 != nil {
+		return &custom.ExprArg{
+			Value: &custom.ExprArg_U64{
+				U64: *arg.U64,
+			},
+		}, nil
+	}
+	if arg.Reuse != "" {
+		if err := validateCustomVarName(arg.Reuse); err != nil {
+			return nil, err
+		}
+		return &custom.ExprArg{
+			Value: &custom.ExprArg_Var{
+				Var: arg.Reuse,
+			},
+		}, nil
+	}
+	if arg.Metadata != "" {
+		return &custom.ExprArg{
+			Value: &custom.ExprArg_Metadata{
+				Metadata: arg.Metadata,
+			},
+		}, nil
+	}
+
+	parsedExpr, err := buildCustomTransform(arg.Transform)
+	if err != nil {
+		return nil, err
+	}
+	return &custom.ExprArg{
+		Value: &custom.ExprArg_Expr{
+			Expr: parsedExpr,
+		},
+	}, nil
 }
 
 type HeaderCustomUDP struct {
+	Mode   string    `json:"mode"`
 	Client []UDPItem `json:"client"`
 	Server []UDPItem `json:"server"`
 }
 
 func (c *HeaderCustomUDP) Build() (proto.Message, error) {
+	switch c.Mode {
+	case "", "prefix", "standalone":
+	default:
+		return nil, errors.New("unknown udp mode")
+	}
+
 	for _, item := range c.Client {
-		if len(item.Packet) > 0 && item.Rand > 0 {
-			return nil, errors.New("len(item.Packet) > 0 && item.Rand > 0")
+		if err := validateCustomItemSpec(item.Capture, item.Packet, item.Rand, item.Reuse, item.Transform); err != nil {
+			return nil, err
 		}
 	}
 	for _, item := range c.Server {
-		if len(item.Packet) > 0 && item.Rand > 0 {
-			return nil, errors.New("len(item.Packet) > 0 && item.Rand > 0")
+		if err := validateCustomItemSpec(item.Capture, item.Packet, item.Rand, item.Reuse, item.Transform); err != nil {
+			return nil, err
 		}
 	}
 
 	client := make([]*custom.UDPItem, 0, len(c.Client))
 	for _, item := range c.Client {
+		if item.RandRange == nil {
+			item.RandRange = &Int32Range{From: 0, To: 255}
+		}
+		if item.RandRange.From < 0 || item.RandRange.To > 255 {
+			return nil, errors.New("invalid randRange")
+		}
 		var err error
 		if item.Packet, err = PraseByteSlice(item.Packet, item.Type); err != nil {
 			return nil, err
 		}
+		transform, err := buildCustomTransform(item.Transform)
+		if err != nil {
+			return nil, err
+		}
 		client = append(client, &custom.UDPItem{
-			Rand:   item.Rand,
-			Packet: item.Packet,
+			Rand:    item.Rand,
+			RandMin: item.RandRange.From,
+			RandMax: item.RandRange.To,
+			Packet:  item.Packet,
+			Save:    item.Capture,
+			Var:     item.Reuse,
+			Expr:    transform,
 		})
 	}
 
 	server := make([]*custom.UDPItem, 0, len(c.Server))
 	for _, item := range c.Server {
+		if item.RandRange == nil {
+			item.RandRange = &Int32Range{From: 0, To: 255}
+		}
+		if item.RandRange.From < 0 || item.RandRange.To > 255 {
+			return nil, errors.New("invalid randRange")
+		}
 		var err error
 		if item.Packet, err = PraseByteSlice(item.Packet, item.Type); err != nil {
 			return nil, err
 		}
+		transform, err := buildCustomTransform(item.Transform)
+		if err != nil {
+			return nil, err
+		}
 		server = append(server, &custom.UDPItem{
-			Rand:   item.Rand,
-			Packet: item.Packet,
+			Rand:    item.Rand,
+			RandMin: item.RandRange.From,
+			RandMax: item.RandRange.To,
+			Packet:  item.Packet,
+			Save:    item.Capture,
+			Var:     item.Reuse,
+			Expr:    transform,
 		})
 	}
 
 	return &custom.UDPConfig{
 		Client: client,
 		Server: server,
+		Mode:   c.Mode,
 	}, nil
 }
 
@@ -1601,16 +1857,30 @@ func (c *Sudoku) Build() (proto.Message, error) {
 }
 
 type Xdns struct {
-	Domain string `json:"domain"`
+	Domain json.RawMessage `json:"domain"`
+
+	Domains   []string `json:"domains"`
+	Resolvers []string `json:"resolvers"`
 }
 
 func (c *Xdns) Build() (proto.Message, error) {
-	if c.Domain == "" {
-		return nil, errors.New("empty domain")
+	if c.Domain != nil {
+		return nil, errors.PrintRemovedFeatureError("domain", "domains(server) & resolvers(client)")
+	}
+
+	if len(c.Domains) == 0 && len(c.Resolvers) == 0 {
+		return nil, errors.New("empty domains & empty resolvers")
+	}
+
+	for _, r := range c.Resolvers {
+		if !strings.Contains(r, "+udp://") {
+			return nil, errors.New("invalid resolver ", r)
+		}
 	}
 
 	return &xdns.Config{
-		Domain: c.Domain,
+		Domains:   c.Domains,
+		Resolvers: c.Resolvers,
 	}, nil
 }
 
@@ -1835,6 +2105,16 @@ func (c *StreamConfig) Build() (*internet.StreamConfig, error) {
 			config.Udpmasks = append(config.Udpmasks, serial.ToTypedMessage(u))
 		}
 		if c.FinalMask.QuicParams != nil {
+			profile := strings.ToLower(c.FinalMask.QuicParams.BbrProfile)
+			switch profile {
+			case "", string(bbr.ProfileConservative), string(bbr.ProfileStandard), string(bbr.ProfileAggressive):
+				if profile == "" {
+					profile = string(bbr.ProfileStandard)
+				}
+			default:
+				return nil, errors.New("unknown bbr profile")
+			}
+
 			up, err := c.FinalMask.QuicParams.BrutalUp.Bps()
 			if err != nil {
 				return nil, err
@@ -1862,18 +2142,7 @@ func (c *StreamConfig) Build() (*internet.StreamConfig, error) {
 				return nil, errors.New("unknown congestion control: ", c.FinalMask.QuicParams.Congestion, ", valid values: reno, bbr, brutal, force-brutal")
 			}
 
-			var hop *PortList
-			if err := json.Unmarshal(c.FinalMask.QuicParams.UdpHop.PortList, &hop); err != nil {
-				hop = &PortList{}
-			}
-
-			var inertvalMin, inertvalMax int64
-			if c.FinalMask.QuicParams.UdpHop.Interval != nil {
-				inertvalMin = int64(c.FinalMask.QuicParams.UdpHop.Interval.From)
-				inertvalMax = int64(c.FinalMask.QuicParams.UdpHop.Interval.To)
-			}
-
-			if (inertvalMin != 0 && inertvalMin < 5) || (inertvalMax != 0 && inertvalMax < 5) {
+			if (c.FinalMask.QuicParams.UdpHop.Interval.From != 0 && c.FinalMask.QuicParams.UdpHop.Interval.From < 5) || (c.FinalMask.QuicParams.UdpHop.Interval.To != 0 && c.FinalMask.QuicParams.UdpHop.Interval.To < 5) {
 				return nil, errors.New("Interval must be at least 5")
 			}
 
@@ -1906,12 +2175,13 @@ func (c *StreamConfig) Build() (*internet.StreamConfig, error) {
 
 			config.QuicParams = &internet.QuicParams{
 				Congestion: c.FinalMask.QuicParams.Congestion,
+				BbrProfile: profile,
 				BrutalUp:   up,
 				BrutalDown: down,
 				UdpHop: &internet.UdpHop{
-					Ports:       hop.Build().Ports(),
-					IntervalMin: inertvalMin,
-					IntervalMax: inertvalMax,
+					Ports:       c.FinalMask.QuicParams.UdpHop.PortList.Build().Ports(),
+					IntervalMin: int64(c.FinalMask.QuicParams.UdpHop.Interval.From),
+					IntervalMax: int64(c.FinalMask.QuicParams.UdpHop.Interval.To),
 				},
 				InitStreamReceiveWindow: c.FinalMask.QuicParams.InitStreamReceiveWindow,
 				MaxStreamReceiveWindow:  c.FinalMask.QuicParams.MaxStreamReceiveWindow,
