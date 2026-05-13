@@ -23,8 +23,8 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.PAT || secrets.GITHUB_TOKEN }}
         run: |
-          # Fetch the latest release info from upstream
-          LATEST_RELEASE=$(gh api repos/XTLS/Xray-core/releases/latest)
+          # Fetch the latest release (including pre-releases)
+          LATEST_RELEASE=$(gh api repos/XTLS/Xray-core/releases | jq '.[0]')
           
           # Extract the tag name
           TAG_NAME=$(echo "$LATEST_RELEASE" | jq -r '.tag_name')
@@ -32,13 +32,17 @@ jobs:
           # Extract the title (name)
           RELEASE_NAME=$(echo "$LATEST_RELEASE" | jq -r '.name')
           
+          # Extract the prerelease status
+          IS_PRERELEASE=$(echo "$LATEST_RELEASE" | jq -r '.prerelease')
+          
           # Extract the body (release notes) and save to a file to handle multiline
           echo "$LATEST_RELEASE" | jq -r '.body' > release_notes.txt
           
           echo "tag=$TAG_NAME" >> "$GITHUB_OUTPUT"
           echo "name=$RELEASE_NAME" >> "$GITHUB_OUTPUT"
+          echo "prerelease=$IS_PRERELEASE" >> "$GITHUB_OUTPUT"
           
-          echo "Upstream latest release is $TAG_NAME"
+          echo "Upstream latest release is $TAG_NAME (Prerelease: $IS_PRERELEASE)"
 
       - name: Check Local Releases
         id: local
@@ -63,10 +67,17 @@ jobs:
         run: |
           TAG_NAME="${{ steps.upstream.outputs.tag }}"
           RELEASE_NAME="${{ steps.upstream.outputs.name }}"
+          IS_PRERELEASE="${{ steps.upstream.outputs.prerelease }}"
           
-          echo "Publishing release $TAG_NAME..."
+          PRERELEASE_FLAG=""
+          if [ "$IS_PRERELEASE" = "true" ]; then
+            PRERELEASE_FLAG="--prerelease"
+          fi
+          
+          echo "Publishing release $TAG_NAME (Prerelease: $IS_PRERELEASE)..."
           
           gh release create "$TAG_NAME" \
+            $PRERELEASE_FLAG \
             --title "$RELEASE_NAME" \
             --notes-file release_notes.txt \
             --target main
