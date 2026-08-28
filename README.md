@@ -110,6 +110,7 @@
   - [Xray_bash_onekey](https://github.com/hello-yunshu/Xray_bash_onekey), [XTool](https://github.com/LordPenguin666/XTool), [VPainLess](https://github.com/vpainless/vpainless)
   - [v2ray-agent](https://github.com/mack-a/v2ray-agent), [Xray_onekey](https://github.com/wulabing/Xray_onekey), [ProxySU](https://github.com/proxysu/ProxySU)
 - Magisk
+  - [Magic_V2Ray](https://github.com/vincentng295/Magic_V2Ray)
   - [Xray_For_Magisk](https://github.com/E7KMbb/Xray_For_Magisk)
 - Homebrew
   - `brew install xray`
@@ -182,6 +183,8 @@
   - [v2rayN](https://github.com/2dust/v2rayN)
   - [GenyConnect](https://github.com/genyleap/GenyConnect)
   - [OneXray](https://github.com/OneXray/OneXray)
+- HarmonyOS
+  - [Hey](https://github.com/popsiclelmlm/Hey)
 
 ## Others that support VLESS, XTLS, REALITY, XUDP, PLUX...
 
@@ -221,6 +224,27 @@
 - [Xray-core v1.0.0](https://github.com/XTLS/Xray-core/releases/tag/v1.0.0) was forked from [v2fly-core 9a03cc5](https://github.com/v2fly/v2ray-core/commit/9a03cc5c98d04cc28320fcee26dbc236b3291256), and we have made & accumulated a huge number of enhancements over time, check [the release notes for each version](https://github.com/XTLS/Xray-core/releases).
 - For third-party projects used in [Xray-core](https://github.com/XTLS/Xray-core), check your local or [the latest go.mod](https://github.com/XTLS/Xray-core/blob/main/go.mod).
 
+### Bundled Third-Party Components Redistribution
+
+**Certain optional features dynamically load third-party components. These optional components are separate works distributed under their own licenses, and are bundled into the ZIP package for ease of use. Users may replace these components under the licenses from these components.**
+
+These components include:
+
+#### Wintun
+
+This distribution contains unmodified official precompiled and pre-signed Wintun binaries.
+
+- Project: Wintun
+- Copyright: Copyright (C) 2018-2021 WireGuard LLC. All Rights Reserved.
+- Redistribution License: Prebuilt Binaries License (PBL) bundled with official precompiled and pre-signed binaries from wintun.net
+- Component(s): wintun.dll
+- Source: https://www.wintun.net/
+- Included in:
+  - Windows x86 (windows-32, win7-32)
+  - Windows x86-64 (windows-64, win7-64)
+  - Windows AArch64 (windows-arm64)
+- Notes: Wintun is an optional runtime-loaded component only used for TUN inbound functionality on supported Windows platforms.
+
 ## One-line Compilation
 
 ### Windows (PowerShell)
@@ -247,6 +271,23 @@ go build -o xray.exe -trimpath -buildvcs=false -ldflags="-s -w -buildid=" -v ./m
 1. **XTLS Vision 兼容**：当限速启用时，Splice 会自动禁用以确保限速生效
 2. **并发 IP 计算**：同一 IP 的多个连接只计为 1 个 IP，IP 在 20 秒无活动后自动移除
 3. **客户端兼容**：某些客户端（如使用 tproxy 模式的 V2rayA）可能使用内核转发绕过限速
+
+For Android:
+
+```bash
+GOOS=android GOARCH=arm64 CGO_ENABLED=1 CC=/path/to/aarch64-linux-android24-clang go build -o xray -trimpath -buildvcs=false -gcflags="all=-l=4" -ldflags="-X github.com/xtls/xray-core/core.build=REPLACE -s -w -buildid= -checklinkname=0" -v ./main
+GOOS=android GOARCH=amd64 CGO_ENABLED=1 CC=/path/to/x86_64-linux-android24-clang go build -o xray -trimpath -buildvcs=false -gcflags="all=-l=4" -ldflags="-X github.com/xtls/xray-core/core.build=REPLACE -s -w -buildid= -checklinkname=0" -v ./main
+```
+
+If you are compiling a 32-bit MIPS/MIPSLE target, use this command instead:
+
+```bash
+CGO_ENABLED=0 go build -o xray -trimpath -buildvcs=false -gcflags="-l=4" -ldflags="-X github.com/xtls/xray-core/core.build=REPLACE -s -w -buildid=" -v ./main
+```
+
+## Stargazers over time
+
+[![Stargazers over time](https://starchart.cc/XTLS/Xray-core.svg)](https://starchart.cc/XTLS/Xray-core)
 
 ## 常见问题
 

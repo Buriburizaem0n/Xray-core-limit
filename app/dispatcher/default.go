@@ -169,7 +169,7 @@ func (d *DefaultDispatcher) getLink(ctx context.Context) (*transport.Link, *tran
 		if p.Stats.UserOnline {
 			if p.Stats.MaxConcurrentIPs > 0 {
 				name := "user>>>" + user.Email + ">>>online"
-				if om, _ := stats.GetOrRegisterOnlineMap(d.stats, name); om != nil {
+				if om, _ := d.stats.GetOrRegisterOnlineMap(name); om != nil {
 					om.SetMaxIPs(p.Stats.MaxConcurrentIPs)
 					if !om.TryAddIP(userIP) {
 						errors.LogWarning(ctx, "user ", user.Email, " exceeded max concurrent IPs: ", p.Stats.MaxConcurrentIPs, ", current IP: ", userIP)
@@ -184,10 +184,10 @@ func (d *DefaultDispatcher) getLink(ctx context.Context) (*transport.Link, *tran
 		burst := calculateBurst(p.Stats.UplinkSpeedLimit, p.Stats.DownlinkSpeedLimit, p.Stats.BurstSize)
 		if p.Stats.UserUplink {
 			name := "user>>>" + user.Email + ">>>traffic>>>uplink"
-			if c, _ := stats.GetOrRegisterCounter(d.stats, name); c != nil {
+			if c, _ := d.stats.GetOrRegisterCounter(name); c != nil {
 				if p.Stats.UplinkSpeedLimit > 0 {
 					limiterName := "user>>>" + user.Email + ">>>limit>>>uplink"
-					limiter, _ := stats.GetOrRegisterRateLimiter(d.stats, limiterName, rate.Limit(p.Stats.UplinkSpeedLimit), int(burst))
+					limiter, _ := d.stats.GetOrRegisterRateLimiter(limiterName, rate.Limit(p.Stats.UplinkSpeedLimit), int(burst))
 					inboundLink.Writer = NewRateLimitedWriter(inboundLink.Writer, limiter, c)
 				} else {
 					inboundLink.Writer = &SizeStatWriter{Counter: c, Writer: inboundLink.Writer}
@@ -195,16 +195,16 @@ func (d *DefaultDispatcher) getLink(ctx context.Context) (*transport.Link, *tran
 			}
 		} else if p.Stats.UplinkSpeedLimit > 0 {
 			limiterName := "user>>>" + user.Email + ">>>limit>>>uplink"
-			limiter, _ := stats.GetOrRegisterRateLimiter(d.stats, limiterName, rate.Limit(p.Stats.UplinkSpeedLimit), int(burst))
+			limiter, _ := d.stats.GetOrRegisterRateLimiter(limiterName, rate.Limit(p.Stats.UplinkSpeedLimit), int(burst))
 			inboundLink.Writer = NewRateLimitedWriter(inboundLink.Writer, limiter, nil)
 		}
 
 		if p.Stats.UserDownlink {
 			name := "user>>>" + user.Email + ">>>traffic>>>downlink"
-			if c, _ := stats.GetOrRegisterCounter(d.stats, name); c != nil {
+			if c, _ := d.stats.GetOrRegisterCounter(name); c != nil {
 				if p.Stats.DownlinkSpeedLimit > 0 {
 					limiterName := "user>>>" + user.Email + ">>>limit>>>downlink"
-					limiter, _ := stats.GetOrRegisterRateLimiter(d.stats, limiterName, rate.Limit(p.Stats.DownlinkSpeedLimit), int(burst))
+					limiter, _ := d.stats.GetOrRegisterRateLimiter(limiterName, rate.Limit(p.Stats.DownlinkSpeedLimit), int(burst))
 					inboundLink.Reader = NewRateLimitedReader(inboundLink.Reader, limiter, c)
 				} else {
 					inboundLink.Reader = &SizeStatReader{Counter: c, Reader: inboundLink.Reader}
@@ -212,7 +212,7 @@ func (d *DefaultDispatcher) getLink(ctx context.Context) (*transport.Link, *tran
 			}
 		} else if p.Stats.DownlinkSpeedLimit > 0 {
 			limiterName := "user>>>" + user.Email + ">>>limit>>>downlink"
-			limiter, _ := stats.GetOrRegisterRateLimiter(d.stats, limiterName, rate.Limit(p.Stats.DownlinkSpeedLimit), int(burst))
+			limiter, _ := d.stats.GetOrRegisterRateLimiter(limiterName, rate.Limit(p.Stats.DownlinkSpeedLimit), int(burst))
 			inboundLink.Reader = NewRateLimitedReader(inboundLink.Reader, limiter, nil)
 		}
 	}
@@ -239,7 +239,7 @@ func WrapLink(ctx context.Context, policyManager policy.Manager, statsManager st
 		if p.Stats.UserOnline {
 			if p.Stats.MaxConcurrentIPs > 0 {
 				name := "user>>>" + user.Email + ">>>online"
-				if om, _ := stats.GetOrRegisterOnlineMap(statsManager, name); om != nil {
+				if om, _ := statsManager.GetOrRegisterOnlineMap(name); om != nil {
 					om.SetMaxIPs(p.Stats.MaxConcurrentIPs)
 					if !om.TryAddIP(userIP) {
 						errors.LogWarning(ctx, "user ", user.Email, " exceeded max concurrent IPs: ", p.Stats.MaxConcurrentIPs, ", current IP: ", userIP)
@@ -256,26 +256,25 @@ func WrapLink(ctx context.Context, policyManager policy.Manager, statsManager st
 		burst := calculateBurst(p.Stats.UplinkSpeedLimit, p.Stats.DownlinkSpeedLimit, p.Stats.BurstSize)
 		if p.Stats.UserUplink {
 			name := "user>>>" + user.Email + ">>>traffic>>>uplink"
-			if c, _ := stats.GetOrRegisterCounter(statsManager, name); c != nil {
+			if c, _ := statsManager.GetOrRegisterCounter(name); c != nil {
+				link.Reader.(*buf.TimeoutWrapperReader).Counter = c
 				if p.Stats.UplinkSpeedLimit > 0 {
 					limiterName := "user>>>" + user.Email + ">>>limit>>>uplink"
-					limiter, _ := stats.GetOrRegisterRateLimiter(statsManager, limiterName, rate.Limit(p.Stats.UplinkSpeedLimit), int(burst))
-					link.Reader = NewRateLimitedReader(link.Reader, limiter, c)
-				} else {
-					link.Reader = &SizeStatReader{Counter: c, Reader: link.Reader}
+					limiter, _ := statsManager.GetOrRegisterRateLimiter(limiterName, rate.Limit(p.Stats.UplinkSpeedLimit), int(burst))
+					link.Reader = NewRateLimitedReader(link.Reader, limiter, nil)
 				}
 			}
 		} else if p.Stats.UplinkSpeedLimit > 0 {
 			limiterName := "user>>>" + user.Email + ">>>limit>>>uplink"
-			limiter, _ := stats.GetOrRegisterRateLimiter(statsManager, limiterName, rate.Limit(p.Stats.UplinkSpeedLimit), int(burst))
+			limiter, _ := statsManager.GetOrRegisterRateLimiter(limiterName, rate.Limit(p.Stats.UplinkSpeedLimit), int(burst))
 			link.Reader = NewRateLimitedReader(link.Reader, limiter, nil)
 		}
 		if p.Stats.UserDownlink {
 			name := "user>>>" + user.Email + ">>>traffic>>>downlink"
-			if c, _ := stats.GetOrRegisterCounter(statsManager, name); c != nil {
+			if c, _ := statsManager.GetOrRegisterCounter(name); c != nil {
 				if p.Stats.DownlinkSpeedLimit > 0 {
 					limiterName := "user>>>" + user.Email + ">>>limit>>>downlink"
-					limiter, _ := stats.GetOrRegisterRateLimiter(statsManager, limiterName, rate.Limit(p.Stats.DownlinkSpeedLimit), int(burst))
+					limiter, _ := statsManager.GetOrRegisterRateLimiter(limiterName, rate.Limit(p.Stats.DownlinkSpeedLimit), int(burst))
 					link.Writer = NewRateLimitedWriter(
 						link.Writer,
 						limiter,
@@ -290,7 +289,7 @@ func WrapLink(ctx context.Context, policyManager policy.Manager, statsManager st
 			}
 		} else if p.Stats.DownlinkSpeedLimit > 0 {
 			limiterName := "user>>>" + user.Email + ">>>limit>>>downlink"
-			limiter, _ := stats.GetOrRegisterRateLimiter(statsManager, limiterName, rate.Limit(p.Stats.DownlinkSpeedLimit), int(burst))
+			limiter, _ := statsManager.GetOrRegisterRateLimiter(limiterName, rate.Limit(p.Stats.DownlinkSpeedLimit), int(burst))
 			link.Writer = NewRateLimitedWriter(
 				link.Writer,
 				limiter,
@@ -304,7 +303,7 @@ func WrapLink(ctx context.Context, policyManager policy.Manager, statsManager st
 
 func trackOnlineIP(ctx context.Context, sm stats.Manager, email, ip string) {
 	name := "user>>>" + email + ">>>online"
-	if om, _ := stats.GetOrRegisterOnlineMap(sm, name); om != nil {
+	if om, _ := sm.GetOrRegisterOnlineMap(name); om != nil {
 		om.AddIP(ip)
 		context.AfterFunc(ctx, func() { om.RemoveIP(ip) })
 	}

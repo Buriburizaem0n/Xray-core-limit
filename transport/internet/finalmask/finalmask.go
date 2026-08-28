@@ -3,9 +3,9 @@ package finalmask
 import (
 	"context"
 	"net"
-	"sync"
+	"slices"
 
-	"github.com/xtls/xray-core/common/bytespool"
+	"github.com/xtls/xray-core/common/buf"
 	"github.com/xtls/xray-core/common/errors"
 )
 
@@ -29,7 +29,7 @@ func NewUdpmaskManager(udpmasks []Udpmask) *UdpmaskManager {
 func (m *UdpmaskManager) WrapPacketConnClient(raw net.PacketConn) (net.PacketConn, error) {
 	var sizes []int
 	var conns []net.PacketConn
-	for i, mask := range m.udpmasks {
+	for i, mask := range slices.Backward(m.udpmasks) {
 		if _, ok := mask.(headerConn); ok {
 			conn, err := mask.WrapPacketConnClient(nil, i, len(m.udpmasks)-1)
 			if err != nil {
@@ -62,7 +62,7 @@ func (m *UdpmaskManager) WrapPacketConnClient(raw net.PacketConn) (net.PacketCon
 func (m *UdpmaskManager) WrapPacketConnServer(raw net.PacketConn) (net.PacketConn, error) {
 	var sizes []int
 	var conns []net.PacketConn
-	for i, mask := range m.udpmasks {
+	for i, mask := range slices.Backward(m.udpmasks) {
 		if _, ok := mask.(headerConn); ok {
 			conn, err := mask.WrapPacketConnServer(nil, i, len(m.udpmasks)-1)
 			if err != nil {
@@ -105,61 +105,60 @@ type headerSize interface {
 }
 
 type headerManagerConn struct {
-	sync.Mutex
 	net.PacketConn
 
-	sizes    []int
-	conns    []net.PacketConn
-	writeBuf [UDPSize]byte
+	sizes []int
+	conns []net.PacketConn
 }
 
 func (c *headerManagerConn) ReadFrom(p []byte) (n int, addr net.Addr, err error) {
-	buf := p
-	if len(buf) < UDPSize {
-		b := bytespool.Alloc(UDPSize)
-		b = b[:UDPSize]
-		defer bytespool.Free(b)
-		buf = b
+	b := p
+	if len(b) < UDPSize {
+		buf := buf.New()
+		buf.Resize(0, UDPSize)
+		b = buf.Bytes()
+		defer buf.Release()
 	}
 
-	n, addr, err = c.PacketConn.ReadFrom(buf)
-	if n == 0 || err != nil {
-		return 0, addr, err
-	}
-	newBuf := buf[:n]
-
-	sum := 0
-	for _, size := range c.sizes {
-		sum += size
-	}
-
-	if n < sum {
-		errors.LogDebug(context.Background(), addr, " mask read err short length")
-		return 0, addr, nil
-	}
-
-	for i := range c.conns {
-		n, _, err = c.conns[i].ReadFrom(newBuf)
-		if n == 0 || err != nil {
-			errors.LogDebug(context.Background(), addr, " mask read err ", err)
-			return 0, addr, nil
+	for {
+		n, addr, err = c.PacketConn.ReadFrom(b)
+		if err != nil {
+			return n, addr, err
 		}
-		newBuf = newBuf[c.sizes[i] : n+c.sizes[i]]
+		buf := b[:n]
+
+		sum := 0
+		for _, size := range c.sizes {
+			sum += size
+		}
+
+		if n < sum {
+			errors.LogError(context.Background(), "[mask] drop packet from ", addr, " with size ", n)
+			continue
+		}
+
+		for i := range c.conns {
+			n, _, err = c.conns[i].ReadFrom(buf)
+			if err != nil {
+				errors.LogErrorInner(context.Background(), err, "[mask] drop packet from ", addr, " with size ", n)
+				break
+			}
+			buf = buf[c.sizes[i] : n+c.sizes[i]]
+		}
+
+		if err != nil {
+			continue
+		}
+
+		return copy(p, buf), addr, nil
 	}
-
-	if len(p) < n {
-		errors.LogDebug(context.Background(), addr, " mask read err short buffer")
-		return 0, addr, nil
-	}
-
-	copy(p, buf[sum:sum+n])
-
-	return n, addr, nil
 }
 
 func (c *headerManagerConn) WriteTo(p []byte, addr net.Addr) (n int, err error) {
-	c.Lock()
-	defer c.Unlock()
+	buf := buf.New()
+	buf.Resize(0, UDPSize)
+	b := buf.Bytes()
+	defer buf.Release()
 
 	sum := 0
 	for _, size := range c.sizes {
@@ -167,24 +166,29 @@ func (c *headerManagerConn) WriteTo(p []byte, addr net.Addr) (n int, err error) 
 	}
 
 	if sum+len(p) > UDPSize {
-		errors.LogDebug(context.Background(), addr, " mask write err short write")
+		errors.LogError(context.Background(), "[mask] drop packet to ", addr, " with size ", len(p))
 		return 0, nil
 	}
 
-	n = copy(c.writeBuf[sum:], p)
+	n = copy(b[sum:], p)
 
 	for i := len(c.conns) - 1; i >= 0; i-- {
-		n, err = c.conns[i].WriteTo(c.writeBuf[sum-c.sizes[i]:n+sum], nil)
-		if n == 0 || err != nil {
-			errors.LogDebug(context.Background(), addr, " mask write err ", err)
+		n, err = c.conns[i].WriteTo(b[sum-c.sizes[i]:n+sum], nil)
+		if err != nil {
+			errors.LogErrorInner(context.Background(), err, "[mask] drop packet to ", addr, " with size ", len(p))
 			return 0, nil
 		}
 		sum -= c.sizes[i]
 	}
 
-	n, err = c.PacketConn.WriteTo(c.writeBuf[:n], addr)
-	if n == 0 || err != nil {
-		return n, err
+	if n > UDPSize {
+		errors.LogError(context.Background(), "[mask] drop packet to ", addr, " with size ", len(p))
+		return 0, nil
+	}
+
+	_, err = c.PacketConn.WriteTo(b[:n], addr)
+	if err != nil {
+		return 0, err
 	}
 
 	return len(p), nil
@@ -209,7 +213,7 @@ func NewTcpmaskManager(tcpmasks []Tcpmask) *TcpmaskManager {
 
 func (m *TcpmaskManager) WrapConnClient(raw net.Conn) (net.Conn, error) {
 	var err error
-	for _, mask := range m.tcpmasks {
+	for _, mask := range slices.Backward(m.tcpmasks) {
 		raw, err = mask.WrapConnClient(raw)
 		if err != nil {
 			return nil, err
@@ -220,7 +224,7 @@ func (m *TcpmaskManager) WrapConnClient(raw net.Conn) (net.Conn, error) {
 
 func (m *TcpmaskManager) WrapConnServer(raw net.Conn) (net.Conn, error) {
 	var err error
-	for _, mask := range m.tcpmasks {
+	for _, mask := range slices.Backward(m.tcpmasks) {
 		raw, err = mask.WrapConnServer(raw)
 		if err != nil {
 			return nil, err

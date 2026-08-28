@@ -8,7 +8,6 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/xtls/xray-core/common"
 )
 
 func TestECHDial(t *testing.T) {
@@ -18,9 +17,11 @@ func TestECHDial(t *testing.T) {
 	}
 	// test concurrent Dial(to test cache problem)
 	wg := sync.WaitGroup{}
+	var once sync.Once
+	var skipTest bool
+	var skipErr error
 	for range 10 {
-		wg.Add(1)
-		go func() {
+		wg.Go(func() {
 			TLSConfig := config.GetTLSConfig()
 			TLSConfig.NextProtos = []string{"http/1.1"}
 			client := &http.Client{
@@ -29,22 +30,37 @@ func TestECHDial(t *testing.T) {
 				},
 			}
 			resp, err := client.Get("https://cloudflare.com/cdn-cgi/trace")
-			common.Must(err)
+			if err != nil {
+				once.Do(func() {
+					skipTest = true
+					skipErr = err
+				})
+				return
+			}
 			defer resp.Body.Close()
 			body, err := io.ReadAll(resp.Body)
-			common.Must(err)
+			if err != nil {
+				once.Do(func() {
+					skipTest = true
+					skipErr = err
+				})
+				return
+			}
 			if !strings.Contains(string(body), "sni=encrypted") {
 				t.Error("ECH Dial success but SNI is not encrypted")
 			}
-			wg.Done()
-		}()
+		})
 	}
 	wg.Wait()
+	if skipTest {
+		t.Log("Skipping TestECHDial due to ECH dial failure (likely DNS query blocked or network issue):", skipErr)
+		t.Skip()
+		return
+	}
 	// check cache
 	echConfigCache, ok := GlobalECHConfigCache.Load(ECHCacheKey("udp://1.1.1.1", "encryptedsni.com", nil))
 	if !ok {
 		t.Error("ECH config cache not found")
-
 	}
 	ok = echConfigCache.UpdateLock.TryLock()
 	if !ok {

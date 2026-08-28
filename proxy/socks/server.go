@@ -4,6 +4,7 @@ import (
 	"context"
 	goerrors "errors"
 	"io"
+	"sync"
 	"time"
 
 	"github.com/xtls/xray-core/common"
@@ -153,9 +154,11 @@ func (s *Server) processTCP(ctx context.Context, conn stat.Connection, dispatche
 		if inbound.CanSpliceCopy == 2 {
 			inbound.CanSpliceCopy = 1
 		}
-		if err := dispatcher.DispatchLink(ctx, dest, &transport.Link{
-			Reader: reader,
-			Writer: buf.NewWriter(conn)},
+		if err := dispatcher.DispatchLink(
+			ctx, dest, &transport.Link{
+				Reader: reader,
+				Writer: buf.NewWriter(conn),
+			},
 		); err != nil {
 			return errors.New("failed to dispatch request").Base(err)
 		}
@@ -214,18 +217,27 @@ func (s *Server) handleUDPPayload(ctx context.Context, conn stat.Connection, dis
 	defer udpServer.RemoveRay()
 
 	inbound := session.InboundFromContext(ctx)
-	if inbound != nil && inbound.Source.IsValid() {
-		errors.LogInfo(ctx, "client UDP connection from ", inbound.Source)
-	}
 
 	var dest *net.Destination
 
 	reader := buf.NewPacketReader(conn)
+	var changeRemote sync.Once
 	for {
 		mpayload, err := reader.ReadMultiBuffer()
 		if err != nil {
 			return err
 		}
+		changeRemote.Do(func() {
+			if inbound != nil {
+				newInbound := *inbound
+				// change source to real remote UDP address
+				newInbound.Source = net.DestinationFromAddr(conn.RemoteAddr())
+				newInbound.Local = net.DestinationFromAddr(conn.LocalAddr())
+				inbound = &newInbound
+				ctx = session.ContextWithInbound(ctx, inbound)
+				errors.LogInfo(ctx, "client UDP connection from ", inbound.Source)
+			}
+		})
 
 		for _, payload := range mpayload {
 			request, err := DecodeUDPPacket(payload)
