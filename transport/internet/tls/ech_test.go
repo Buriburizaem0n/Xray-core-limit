@@ -7,7 +7,6 @@ import (
 	"strings"
 	"sync"
 	"testing"
-
 )
 
 func TestECHDial(t *testing.T) {

@@ -129,7 +129,6 @@ type Manager interface {
 	GetAllOnlineUsers() []string
 }
 
-
 // ManagerType returns the type of Manager interface. Can be used to implement common.HasType.
 //
 // xray:api:stable
