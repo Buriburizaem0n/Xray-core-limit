@@ -2,6 +2,7 @@ package dispatcher
 
 import (
 	"context"
+	"errors"
 	"io"
 	"sync"
 	"time"
@@ -12,6 +13,26 @@ import (
 	"github.com/xtls/xray-core/common/buf"
 	"github.com/xtls/xray-core/features/stats"
 )
+
+var errInvalidLimiterBurst = errors.New("rate limiter burst must be positive")
+
+func waitForBytes(ctx context.Context, limiter *rate.Limiter, size int) error {
+	if limiter == nil || limiter.Limit() <= 0 || size <= 0 {
+		return nil
+	}
+	burst := limiter.Burst()
+	if burst <= 0 {
+		return errInvalidLimiterBurst
+	}
+	for size > 0 {
+		n := min(size, burst)
+		if err := limiter.WaitN(ctx, n); err != nil {
+			return err
+		}
+		size -= n
+	}
+	return nil
+}
 
 // RateLimitedWriter wraps a buf.Writer with rate limiting using golang.org/x/time/rate
 type RateLimitedWriter struct {
@@ -48,20 +69,9 @@ func (w *RateLimitedWriter) WriteMultiBuffer(mb buf.MultiBuffer) error {
 	}
 	w.mu.Unlock()
 
-	if w.limiter != nil && w.limiter.Limit() > 0 {
-		size := int(mb.Len())
-		burst := w.limiter.Burst()
-		for size > 0 {
-			n := size
-			if n > burst {
-				n = burst
-			}
-			if err := w.limiter.WaitN(w.ctx, n); err != nil {
-				buf.ReleaseMulti(mb)
-				return err
-			}
-			size -= n
-		}
+	if err := waitForBytes(w.ctx, w.limiter, int(mb.Len())); err != nil {
+		buf.ReleaseMulti(mb)
+		return err
 	}
 
 	if w.Counter != nil {
@@ -127,30 +137,19 @@ func (r *RateLimitedReader) ReadMultiBuffer() (buf.MultiBuffer, error) {
 	r.mu.Unlock()
 
 	mb, err := r.Reader.ReadMultiBuffer()
-	if err != nil {
+	if err != nil && mb.IsEmpty() {
 		return mb, err
 	}
 
-	size := int(mb.Len())
-	if r.limiter != nil && r.limiter.Limit() > 0 && size > 0 {
-		burst := r.limiter.Burst()
-		for size > 0 {
-			n := size
-			if n > burst {
-				n = burst
-			}
-			if waitErr := r.limiter.WaitN(r.ctx, n); waitErr != nil {
-				buf.ReleaseMulti(mb)
-				return nil, waitErr
-			}
-			size -= n
-		}
+	if waitErr := waitForBytes(r.ctx, r.limiter, int(mb.Len())); waitErr != nil {
+		buf.ReleaseMulti(mb)
+		return nil, waitErr
 	}
 
 	if r.Counter != nil {
 		r.Counter.Add(int64(mb.Len()))
 	}
-	return mb, nil
+	return mb, err
 }
 
 // ReadMultiBufferTimeout implements buf.TimeoutReader with rate limiting
@@ -171,30 +170,19 @@ func (r *RateLimitedReader) ReadMultiBufferTimeout(timeout time.Duration) (buf.M
 		mb, err = r.Reader.ReadMultiBuffer()
 	}
 
-	if err != nil {
+	if err != nil && mb.IsEmpty() {
 		return mb, err
 	}
 
-	size := int(mb.Len())
-	if r.limiter != nil && r.limiter.Limit() > 0 && size > 0 {
-		burst := r.limiter.Burst()
-		for size > 0 {
-			n := size
-			if n > burst {
-				n = burst
-			}
-			if waitErr := r.limiter.WaitN(r.ctx, n); waitErr != nil {
-				buf.ReleaseMulti(mb)
-				return nil, waitErr
-			}
-			size -= n
-		}
+	if waitErr := waitForBytes(r.ctx, r.limiter, int(mb.Len())); waitErr != nil {
+		buf.ReleaseMulti(mb)
+		return nil, waitErr
 	}
 
 	if r.Counter != nil {
 		r.Counter.Add(int64(mb.Len()))
 	}
-	return mb, nil
+	return mb, err
 }
 
 // Interrupt implements common.Interruptible

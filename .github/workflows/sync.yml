@@ -36,24 +36,15 @@ jobs:
           git merge upstream/main --no-edit || true
           
           if [ -f .git/MERGE_HEAD ]; then
-            echo "Merge resulted in conflicts. Attempting to auto-resolve unimportant files..."
-            
-            for target in README.md go.mod go.sum; do
-              if git ls-files -u | grep -q "$target"; then
-                echo "Auto-resolving $target with --ours"
-                git checkout --ours "$target"
-                git add "$target"
-              fi
-            done
-            
-            # Auto-resolve .pb.go files
-            if git ls-files -u | grep -q "\.pb\.go$"; then
-              echo "Auto-resolving .pb.go files with --ours"
-              git ls-files -u | grep "\.pb\.go$" | awk '{print $4}' | sort -u | xargs -r git checkout --ours
-              git ls-files -u | grep "\.pb\.go$" | awk '{print $4}' | sort -u | xargs -r git add
+            echo "Merge resulted in conflicts. Only README.md is safe to auto-resolve."
+
+            if git ls-files -u -- README.md | grep -q .; then
+              git checkout --ours README.md
+              git add README.md
             fi
-            
-            # Check if Unmerged files still exist
+
+            # Dependency manifests and generated protobuf sources must never be
+            # selected independently. Leave those conflicts for the sync PR.
             if git ls-files -u | grep -q .; then
               echo "Real conflicts still exist in core code. Aborting merge and creating PR..."
               git merge --abort
@@ -68,6 +59,21 @@ jobs:
             echo "Merge successful without conflicts."
             echo "merged=true" >> "$GITHUB_OUTPUT"
           fi
+
+      - name: Set up Go for validation
+        if: steps.merge.outputs.merged == 'true'
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          check-latest: true
+          cache: false
+
+      - name: Validate dependency consistency
+        if: steps.merge.outputs.merged == 'true'
+        run: |
+          go mod tidy
+          git diff --exit-code -- go.mod go.sum
+          go test ./app/dispatcher ./app/policy ./app/stats
 
       - name: Push Changes (Clean Merge)
         if: steps.merge.outputs.merged == 'true'

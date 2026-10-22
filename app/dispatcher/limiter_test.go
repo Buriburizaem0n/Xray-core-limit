@@ -1,6 +1,8 @@
 package dispatcher
 
 import (
+	"errors"
+	"io"
 	sync "sync"
 	"testing"
 	"time"
@@ -8,7 +10,22 @@ import (
 	"golang.org/x/time/rate"
 
 	"github.com/xtls/xray-core/common/buf"
+	"github.com/xtls/xray-core/features/policy"
 )
+
+type dataAndErrorReader struct {
+	done bool
+}
+
+func (r *dataAndErrorReader) ReadMultiBuffer() (buf.MultiBuffer, error) {
+	if r.done {
+		return nil, io.EOF
+	}
+	r.done = true
+	b := buf.New()
+	b.Write([]byte("final"))
+	return buf.MultiBuffer{b}, io.EOF
+}
 
 // mockWriter for testing
 type mockWriter struct {
@@ -130,6 +147,59 @@ func TestRateLimitedWriter_Close(t *testing.T) {
 	err := writer.WriteMultiBuffer(buf.MultiBuffer{b})
 	if err == nil {
 		t.Error("Expected error when writing to closed writer")
+	}
+}
+
+func TestRateLimitedReaderCountsDataReturnedWithEOF(t *testing.T) {
+	counter := &mockCounter{}
+	reader := NewRateLimitedReader(&dataAndErrorReader{}, nil, counter)
+
+	mb, err := reader.ReadMultiBuffer()
+	if !errors.Is(err, io.EOF) {
+		t.Fatalf("expected EOF, got %v", err)
+	}
+	defer buf.ReleaseMulti(mb)
+	if got := mb.Len(); got != 5 {
+		t.Fatalf("expected final 5 bytes, got %d", got)
+	}
+	if got := counter.Value(); got != 5 {
+		t.Fatalf("expected final bytes to be counted, got %d", got)
+	}
+}
+
+func TestRateLimitedWriterRejectsInvalidBurst(t *testing.T) {
+	mock := &mockWriter{}
+	writer := NewRateLimitedWriter(mock, rate.NewLimiter(1024, 0), nil)
+	b := buf.New()
+	b.Write([]byte("data"))
+	if err := writer.WriteMultiBuffer(buf.MultiBuffer{b}); !errors.Is(err, errInvalidLimiterBurst) {
+		t.Fatalf("expected invalid burst error, got %v", err)
+	}
+}
+
+func TestCalculateBurstIsDirectionalAndSafe(t *testing.T) {
+	if got := calculateBurst(1024, 0); got != 64*1024 {
+		t.Fatalf("low-speed direction got burst %d", got)
+	}
+	if got := calculateBurst(0, 1024); got != 0 {
+		t.Fatalf("unlimited direction got burst %d", got)
+	}
+	if got := calculateBurst(1024, 128*1024); got != 128*1024 {
+		t.Fatalf("configured burst ignored: %d", got)
+	}
+}
+
+func TestSpeedLimitDisablesSpliceWithoutStats(t *testing.T) {
+	p := policy.Session{}
+	p.Stats.UplinkSpeedLimit = 1024
+	if !hasSpeedLimit(p) {
+		t.Fatal("uplink limit must disable splice even when traffic stats are off")
+	}
+
+	p.Stats.UplinkSpeedLimit = 0
+	p.Stats.DownlinkSpeedLimit = 1024
+	if !hasSpeedLimit(p) {
+		t.Fatal("downlink limit must disable splice even when traffic stats are off")
 	}
 }
 

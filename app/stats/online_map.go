@@ -8,7 +8,7 @@ import (
 
 const (
 	localhostIPv4 = "127.0.0.1"
-	localhostIPv6 = "[::1]"
+	localhostIPv6 = "::1"
 )
 
 type ipEntry struct {

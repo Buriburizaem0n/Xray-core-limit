@@ -46,6 +46,12 @@ func TestOnlineMap_Localhost(t *testing.T) {
 	if !om.TryAddIP("127.0.0.1") {
 		t.Error("Expected to always allow localhost")
 	}
+	if !om.TryAddIP("::1") {
+		t.Error("Expected to always allow IPv6 localhost")
+	}
+	if om.Count() != 1 {
+		t.Errorf("localhost addresses must not be tracked, got count %d", om.Count())
+	}
 }
 
 func TestOnlineMap_ConcurrentTryAddIP(t *testing.T) {
